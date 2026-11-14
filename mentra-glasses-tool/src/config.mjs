@@ -54,5 +54,7 @@ export function readConfig(env = process.env) {
       bitrate: num(env.VIDEO_BITRATE ?? 2_000_000, 'VIDEO_BITRATE', { min: 1 }),
     },
     ingestToken: env.INGEST_TOKEN ?? '',
+    // Live feed for the Glasses Viewer app, on this computer only. 0 switches it off.
+    livePort: num(env.LIVE_PORT ?? 3001, 'LIVE_PORT'),
   };
 }

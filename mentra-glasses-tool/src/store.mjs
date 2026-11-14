@@ -51,11 +51,26 @@ export class SessionStore {
     this.photoCount = 0;
     this.imuCount = 0;
     this.closed = false;
+    this.subscribers = new Set();
+  }
+
+  /** Call `fn(record)` for every event written from now on. Returns a function that stops it. */
+  subscribe(fn) {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
   }
 
   event(type, data = {}) {
     if (this.closed) return;
-    this.eventsStream.write(JSON.stringify({ time: Date.now(), type, ...data }) + '\n');
+    const record = { time: Date.now(), type, ...data };
+    this.eventsStream.write(JSON.stringify(record) + '\n');
+    for (const fn of this.subscribers) {
+      try {
+        fn(record);
+      } catch {
+        /* a listener's problem never stops the recording */
+      }
+    }
   }
 
   imu(sample) {

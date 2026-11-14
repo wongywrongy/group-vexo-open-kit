@@ -3,7 +3,8 @@ import { pathToFileURL } from 'node:url';
 import { AppServer } from '@mentra/sdk';
 import { loadDotEnv, readConfig } from './config.mjs';
 import { SessionStore } from './store.mjs';
-import { attachSession } from './session.mjs';
+import { startRecording } from './recording.mjs';
+import { startLiveFeed } from './live.mjs';
 
 const MAX_BODY = 64 * 1024;
 
@@ -36,29 +37,32 @@ function tokenMatches(given, wanted) {
 }
 
 export class GlassesRecorder extends AppServer {
-  constructor(cfg) {
+  constructor(cfg, live = null) {
     super({ packageName: cfg.packageName, apiKey: cfg.apiKey, port: cfg.port });
     this.cfg = cfg;
-    this.sessions = new Map(); // sessionId -> { store, stop }
+    this.live = live; // feed for the Glasses Viewer app, or null
+    this.sessions = new Map(); // MentraOS sessionId -> { store, stop }
     this.standalone = null; // store for IMU samples that arrive while no glasses session is open
     this.#addImuRoute();
   }
 
   async onSession(session, sessionId, userId) {
-    const store = new SessionStore(this.cfg.dataDir, userId);
-    this.logger.info(`glasses connected, recording to ${store.dir}`);
-    const stop = attachSession(session, store, this.cfg, {
-      log: (m) => this.logger.info(m),
-      warn: (m) => this.logger.warn(m),
+    const rec = startRecording({
+      session,
+      userId,
+      cfg: this.cfg,
+      live: this.live,
+      log: { log: (m) => this.logger.info(m), warn: (m) => this.logger.warn(m) },
     });
-    this.sessions.set(sessionId, { store, stop });
+    this.logger.info(`glasses connected, recording to ${rec.store.dir}`);
+    this.sessions.set(sessionId, rec);
   }
 
   async onStop(sessionId, userId, reason) {
     const entry = this.sessions.get(sessionId);
     if (!entry) return;
     this.sessions.delete(sessionId);
-    await entry.stop();
+    await entry.stop(reason);
     this.logger.info(`glasses session ended (${reason}); ${entry.store.photoCount} photos, ${entry.store.imuCount} IMU samples in ${entry.store.dir}`);
   }
 
@@ -97,6 +101,7 @@ export class GlassesRecorder extends AppServer {
     await Promise.all([...this.sessions.values()].map((e) => e.stop()));
     this.sessions.clear();
     await this.standalone?.close();
+    await this.live?.close();
     return super.stop();
   }
 }
@@ -114,7 +119,8 @@ async function main() {
     console.error('Set PACKAGE_NAME and MENTRAOS_API_KEY (copy .env.example to .env). Both come from console.mentra.glass.');
     process.exit(1);
   }
-  const server = new GlassesRecorder(cfg);
+  const live = await startLiveFeed(cfg);
+  const server = new GlassesRecorder(cfg, live);
   await server.start();
   console.log(`Listening on port ${cfg.port}. Point your ngrok tunnel here and start the app on the glasses.`);
   if (cfg.video) console.log(`Video is on. Glasses will push RTMP to ${cfg.rtmpUrl} (run "npm run video" first).`);

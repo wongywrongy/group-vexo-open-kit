@@ -11,9 +11,46 @@ const fmtClock = (ms) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour
 const fmtBytes = (n) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`);
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** The recorder's live feed, as the app's main process passes it on. */
+function useLive() {
+  const [state, setState] = useState({
+    online: false,
+    status: null,
+    events: [],
+    processes: { status: { recorder: { running: false }, video: { running: false } }, log: [] },
+  });
+  useEffect(() => {
+    let alive = true;
+    api.live().then((s) => alive && setState((prev) => ({ ...prev, ...s })));
+    const off = api.onLive((p) =>
+      setState((prev) => {
+        if (p.type === 'online') return { ...prev, online: p.online, status: p.online ? prev.status : null };
+        if (p.type === 'message' && p.msg.kind === 'status') return { ...prev, status: p.msg };
+        if (p.type === 'message' && p.msg.kind === 'event') return { ...prev, events: [...prev.events.slice(-199), p.msg] };
+        if (p.type === 'proc') return { ...prev, processes: { ...prev.processes, status: p.status } };
+        if (p.type === 'log') return { ...prev, processes: { ...prev.processes, log: [...prev.processes.log.slice(-299), p.entry] } };
+        return prev;
+      }),
+    );
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+  return state;
+}
+
+/** 'offline': no recorder. 'waiting': recorder on, no glasses. 'connected': glasses are sending. */
+const phaseOf = (live) => (!live.online ? 'offline' : live.status?.sessions?.length ? 'connected' : 'waiting');
+const PHASE_TEXT = { offline: 'Recorder off', waiting: 'Waiting for glasses', connected: 'Glasses connected' };
+const modeOf = (live) => live.status?.recorder?.mode ?? null;
+const phaseLabel = (live, phase) => (phase === 'connected' && modeOf(live) === 'receiver' ? 'Receiving from glasses' : PHASE_TEXT[phase]);
+
 export default function App() {
   const [lib, setLib] = useState(null);
-  const [selected, setSelected] = useState(null); // { kind: 'session' | 'video', id }
+  const [selected, setSelected] = useState({ kind: 'live' }); // { kind: 'live' | 'session' | 'video', id }
+  const live = useLive();
+  const phase = phaseOf(live);
 
   const refresh = useCallback(async () => setLib(await api.scan()), []);
   useEffect(() => {
@@ -22,14 +59,17 @@ export default function App() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  // Pick the newest item at the start, and drop a selection whose folder disappeared.
+  // A new photo from the glasses: look at the folder again right away.
+  const lastEvent = live.events.at(-1);
   useEffect(() => {
-    if (!lib) return;
-    const exists = selected && (selected.kind === 'session' ? lib.sessions : lib.videos).some((x) => x.id === selected.id);
-    if (exists) return;
-    if (lib.videos[0] && (!lib.sessions[0] || lib.videos[0].time > lib.sessions[0].time)) setSelected({ kind: 'video', id: lib.videos[0].id });
-    else if (lib.sessions[0]) setSelected({ kind: 'session', id: lib.sessions[0].id });
-    else setSelected(null);
+    if (lastEvent?.event?.type === 'photo') refresh();
+  }, [lastEvent, refresh]);
+
+  // Drop a selection whose folder disappeared.
+  useEffect(() => {
+    if (!lib || selected.kind === 'live') return;
+    const exists = (selected.kind === 'session' ? lib.sessions : lib.videos).some((x) => x.id === selected.id);
+    if (!exists) setSelected({ kind: 'live' });
   }, [lib, selected]);
 
   const choose = async () => {
@@ -39,7 +79,7 @@ export default function App() {
   };
 
   if (!lib) return <div className="loading">Loading…</div>;
-  const item = selected && (selected.kind === 'session' ? lib.sessions : lib.videos).find((x) => x.id === selected.id);
+  const item = selected.kind !== 'live' && (selected.kind === 'session' ? lib.sessions : lib.videos).find((x) => x.id === selected.id);
 
   return (
     <div className="app">
@@ -53,6 +93,14 @@ export default function App() {
           <span className="folder-path">
             <bdi dir="ltr">{lib.root}</bdi>
           </span>
+        </button>
+
+        <button className={`nav live-nav ${selected.kind === 'live' ? 'active' : ''}`} onClick={() => setSelected({ kind: 'live' })}>
+          <span className="nav-title">
+            <span className={`status-dot ${phase}`} aria-hidden />
+            Live
+          </span>
+          <span className="nav-sub">{phaseLabel(live, phase)}</span>
         </button>
 
         <Section title="Recordings" count={lib.videos.length}>
@@ -81,7 +129,8 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!item && <Empty lib={lib} onChoose={choose} />}
+        {selected.kind === 'live' && <LiveView live={live} phase={phase} lib={lib} onChanged={refresh} />}
+        {selected.kind !== 'live' && !item && <Empty lib={lib} onChoose={choose} />}
         {item && selected.kind === 'session' && <SessionView key={item.id} session={item} />}
         {item && selected.kind === 'video' && <VideoView key={item.id} video={item} />}
       </main>
@@ -336,6 +385,252 @@ function VideoView({ video }) {
         </section>
       )}
       {open !== null && <Lightbox items={video.frames} index={open} onIndex={setOpen} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+const ago = (ms) => {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+};
+
+function describe(e) {
+  switch (e.type) {
+    case 'photo': return e.reason === 'mentra-app' ? `Photo received (${Math.round((e.bytes ?? 0) / 1000)} kB)` : `Photo saved (${e.reason ?? 'timer'})`;
+    case 'video': return `Video received (${((e.bytes ?? 0) / 1e6).toFixed(1)} MB)`;
+    case 'receiver_start': return 'Receiver started';
+    case 'photo_error': return `Photo failed: ${e.message}`;
+    case 'head_position': return `Head ${e.position}`;
+    case 'button': return `Button: ${e.pressType} press`;
+    case 'touch': return `Touch: ${String(e.gesture ?? '').replace(/_/g, ' ')}`;
+    case 'battery': return `Battery ${e.level}%${e.charging ? ', charging' : ''}`;
+    case 'stream_status': return `Video: ${e.status}`;
+    case 'stream_error': return `Video failed: ${e.message}`;
+    case 'session_start': return 'Glasses connected';
+    case 'session_end': return 'Glasses disconnected';
+    default: return e.type;
+  }
+}
+
+function LiveView({ live, phase, lib, onChanged }) {
+  const [video, setVideo] = useState(false);
+  const [message, setMessage] = useState('');
+  const [, setNow] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setNow((n) => n + 1), 1000); // keeps "5 s ago" fresh
+    return () => clearInterval(t);
+  }, []);
+
+  const proc = live.processes.status;
+  const ours = proc.recorder.running;
+  const session = live.status?.sessions?.at(-1) ?? null;
+  const mine = session ? live.events.filter((m) => m.sessionId === session.sessionId).map((m) => m.event) : [];
+  const last = (type) => [...mine].reverse().find((e) => e.type === type);
+  const photos = mine.filter((e) => e.type === 'photo');
+  const videos = mine.filter((e) => e.type === 'video');
+  const latestPhoto = photos.at(-1);
+  const latestVideo = videos.at(-1);
+  const showVideo = latestVideo && (!latestPhoto || latestVideo.time > latestPhoto.time);
+  const receiving = modeOf(live) === 'receiver';
+  const uploadUrl = receiving ? live.status?.recorder?.uploadUrl : null;
+  const rtmpUrl = receiving ? live.status?.recorder?.rtmpUrl : null;
+  const [copied, setCopied] = useState('');
+  const copy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(text);
+      setTimeout(() => setCopied(''), 1500);
+    } catch {
+      /* the address stays selectable */
+    }
+  };
+  const battery = last('battery');
+  const head = last('head_position');
+  const caps = last('session_start')?.capabilities;
+  const recorderDir = live.status?.recorder?.dataDir;
+  const otherFolder = recorderDir && lib.root !== recorderDir;
+  const liveVideo = lib.videos.find((v) => v.live && v.latest);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!liveVideo) return;
+    const t = setInterval(() => setTick((n) => n + 1), 500);
+    return () => clearInterval(t);
+  }, [liveVideo]);
+
+  const start = async (mode) => {
+    setMessage('');
+    const res = await api.startRecorder(mode, mode !== 'demo' && video);
+    if (!res?.ok) setMessage(res?.message ?? 'Could not start.');
+  };
+
+  return (
+    <div className="view">
+      <div className="toolbar">
+        <div>
+          <h1>Live</h1>
+          <p className="muted">
+            {receiving || !live.online
+              ? 'Glasses → your Wi-Fi → this Mac → here. Mentra’s app sends the commands over Bluetooth.'
+              : 'Glasses → phone (Bluetooth) → Mentra cloud → recorder on this Mac → here'}
+          </p>
+        </div>
+        <span className={`pill ${phase}`}>
+          <span className={`status-dot ${phase}`} aria-hidden />
+          {phaseLabel(live, phase)}
+        </span>
+      </div>
+
+      <section className="panel controls">
+        {ours ? (
+          <>
+            <p>
+              <strong>
+                {{ demo: 'Demo glasses running', receiver: 'Receiver running', glasses: 'Cloud recorder running' }[proc.recorder.mode] ?? 'Running'}
+              </strong>
+              {proc.video.running && ' · receiving video'}
+            </p>
+            <button onClick={() => api.stopRecorder()}>Stop</button>
+          </>
+        ) : live.online ? (
+          <p>A recorder started in a terminal is running. Stop it there with Ctrl+C.</p>
+        ) : (
+          <>
+            <button className="primary" onClick={() => start('receiver')}>Receive from glasses</button>
+            <label className="check">
+              <input type="checkbox" checked={video} onChange={(e) => setVideo(e.target.checked)} /> with live video
+            </label>
+            <span className="sep" />
+            <button onClick={() => start('demo')}>Try demo glasses</button>
+            <button onClick={() => start('glasses')}>Cloud recorder</button>
+          </>
+        )}
+        {message && <p className="warn">{message}. See the recorder output below.</p>}
+      </section>
+
+      {otherFolder && (
+        <div className="notice panel">
+          <p>The recorder saves to {recorderDir}, but this app is showing {lib.root}.</p>
+          <button onClick={async () => { await api.useFolder(recorderDir); onChanged(); }}>Show the recorder's folder</button>
+        </div>
+      )}
+
+      {phase === 'offline' && !ours && (
+        <section className="panel hint">
+          <h2>Get photos and videos from the glasses</h2>
+          <ol>
+            <li>Connect the glasses in Mentra’s example app (TestFlight, on this Mac or your iPhone) and put them on the same Wi-Fi as this Mac.</li>
+            <li>Press <strong>Receive from glasses</strong>. It shows a <em>Media upload URL</em>.</li>
+            <li>In Mentra’s app: Camera screen, turn on <strong>Use cloud server</strong>, paste the URL, then take photos or record video. They appear here.</li>
+          </ol>
+          <p className="muted">
+            No glasses yet? <strong>Try demo glasses</strong>. Using the MentraOS app and ngrok instead? <strong>Cloud recorder</strong> (needs <code>.env</code>).
+          </p>
+        </section>
+      )}
+
+      {phase === 'waiting' && (
+        <section className="panel hint">
+          <h2>Recorder is on. Waiting for the glasses</h2>
+          <p>Open your app on the glasses from the MentraOS phone app. The glasses talk Bluetooth to the phone, the phone sends everything here.</p>
+        </section>
+      )}
+
+      {uploadUrl && (
+        <section className="panel urls">
+          <h2>Paste into Mentra’s app</h2>
+          <div className="url-row">
+            <span className="url-label">Media upload URL</span>
+            <code className="url">{uploadUrl}</code>
+            <button onClick={() => copy(uploadUrl)}>{copied === uploadUrl ? 'Copied' : 'Copy'}</button>
+          </div>
+          {rtmpUrl && (
+            <div className="url-row">
+              <span className="url-label">Live video (Stream screen)</span>
+              <code className="url">{rtmpUrl}</code>
+              <button onClick={() => copy(rtmpUrl)}>{copied === rtmpUrl ? 'Copied' : 'Copy'}</button>
+            </div>
+          )}
+          <p className="muted">
+            Glasses and this Mac must be on the same Wi-Fi.{' '}
+            {proc.video.running ? 'Live video is being received too.' : 'Tick “with live video” before starting to also receive the live stream.'}
+          </p>
+        </section>
+      )}
+
+      {phase === 'connected' && (
+        <div className="live-grid">
+          <section className="panel">
+            <h2>{liveVideo ? 'Live video frame' : showVideo ? 'Newest video' : 'Newest photo'}</h2>
+            {liveVideo ? (
+              <img className="live-frame" src={`${mediaUrl(liveVideo.latest)}?t=${tick}`} alt="Newest video frame" />
+            ) : showVideo ? (
+              <>
+                <video className="live-frame" key={latestVideo.file} src={mediaUrl(latestVideo.file)} controls preload="metadata" />
+                <p className="muted">{fmtClock(latestVideo.time)} · {ago(latestVideo.time)}</p>
+              </>
+            ) : latestPhoto ? (
+              <>
+                <img className="live-frame" src={mediaUrl(`${session.sessionId}/${latestPhoto.file}`)} alt="Newest photo from the glasses" />
+                <p className="muted">{fmtClock(latestPhoto.time)} · {ago(latestPhoto.time)}</p>
+              </>
+            ) : (
+              <p className="muted">
+                {receiving ? 'Nothing yet. Take a photo or record a clip in Mentra’s app.' : 'No photo yet. The first one takes a few seconds.'}
+              </p>
+            )}
+          </section>
+
+          <section className="panel glasses-card">
+            <h2>{receiving ? 'Received' : 'Glasses'}</h2>
+            <dl>
+              {receiving ? (
+                <>
+                  <dt>Since</dt><dd>{ago(session.startedAt)}</dd>
+                  <dt>Photos</dt><dd>{photos.length}</dd>
+                  <dt>Videos</dt><dd>{videos.length}</dd>
+                </>
+              ) : (
+                <>
+              <dt>Model</dt><dd>{caps?.modelName ?? 'unknown'}</dd>
+              <dt>Connected</dt><dd>{ago(session.startedAt)}</dd>
+              <dt>Battery</dt>
+              <dd>
+                {battery ? (
+                  <span className="battery">
+                    <span className="battery-track"><span style={{ width: `${Math.min(100, Math.max(0, battery.level))}%` }} /></span>
+                    {battery.level}%
+                  </span>
+                ) : '…'}
+              </dd>
+              <dt>Head</dt><dd>{head ? head.position : '…'}</dd>
+              <dt>Photos</dt><dd>{photos.length}</dd>
+                </>
+              )}
+            </dl>
+          </section>
+
+          <section className="panel feed">
+            <h2>{receiving ? 'What arrived' : 'What the glasses send'}</h2>
+            <ul>
+              {[...mine].reverse().slice(0, 40).map((e, i) => (
+                <li key={`${e.time}-${i}`} className={/error/.test(e.type) ? 'bad' : ''}>
+                  <span className="mono">{fmtClock(e.time)}</span>
+                  <span>{describe(e)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      )}
+
+      <details className="panel log" open={!!message}>
+        <summary>Recorder output ({live.processes.log.length})</summary>
+        <pre>
+          {live.processes.log.length
+            ? live.processes.log.map((l) => `${fmtClock(l.time)} [${l.source}] ${l.line}`).join('\n')
+            : 'Nothing yet. Output appears here when the recorder is started from this app.'}
+        </pre>
+      </details>
     </div>
   );
 }

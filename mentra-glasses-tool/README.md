@@ -6,11 +6,35 @@ but see "The IMU gap" first: the glasses' SDK does not give you those today.
 
 Nothing here is committed or pushed anywhere. Recordings go to `data/` (git-ignored).
 
+## Quickest way: photos and videos straight from the glasses (no cloud)
+
+Mentra Live sends photos and video clips over **your Wi-Fi** to an address you give it; Bluetooth only
+carries the commands. `npm run receive` is that address, on this computer:
+
+1. Connect the glasses in **Mentra's example app** (Mentra's TestFlight build, on an Apple silicon Mac or an
+   iPhone; see Mentra's "Update Mentra Live" page). Put the glasses on the **same Wi-Fi** as this computer.
+2. Here: `npm run receive` (or **Receive from glasses** in the viewer app). It prints a *Media upload URL*
+   such as `http://192.168.1.20:8787/upload`.
+3. In Mentra's app: **Camera** screen, turn on **Use cloud server**, paste that URL into **Media upload URL**,
+   then take photos or record video. Each photo lands in `data/<time>_mentra-app/photos/`, each clip in
+   `data/video/<time>_<id>/recording.mp4`, and both show up at once in the viewer.
+4. Live video: also run `npm run video`, and paste the printed RTMP address into Mentra's **Stream** screen.
+
+Tested here by sending a real JPEG and a real MP4 the way the glasses do (multipart `photo` / `video` plus
+`requestId`, the format of Mentra's own receiver). **Not yet tried with real glasses.** Notes:
+- Port 8787 is the same one Mentra's own receiver uses; run only one of them (or set `RECEIVER_PORT`).
+- While it runs, anyone on the same Wi-Fi can send it files (only JPEG/PNG/WebP photos and MP4 videos are
+  kept, up to 300 MB). Set `UPLOAD_TOKEN` to require a token if the app you use sends one, and stop it with
+  Ctrl+C when you are done.
+- macOS may ask whether Node may accept incoming connections: allow it, or the glasses cannot reach it.
+
+The rest of this page is the older route through the Mentra cloud (MentraOS app + ngrok).
+
 ## What is tested and what is not
 
 | Part | Status |
 |---|---|
-| Saving events, photos, IMU samples; settings checks; photo/video logic | Tested here with a pretend glasses session (`npm test`, 10 tests) |
+| Saving events, photos, IMU samples; settings checks; photo/video logic; the live feed; the Wi-Fi receiver | Tested here (`npm test`, 23 tests) |
 | Video receiver (`scripts/record-video.sh`) | Tested here with a fake RTMP push: it made `recording.mp4`, frame screenshots and `latest.jpg` |
 | `/imu` endpoint on the real MentraOS SDK server | Tested here: wrong token refused, good samples saved |
 | **Real glasses end to end** (app registration, the tunnel, photos, the stream) | **Not tested.** No glasses were available. The SDK calls were checked against the installed `@mentra/sdk` 2.1.29 type files, not run against a pair of glasses |
@@ -80,9 +104,14 @@ curl -X POST http://localhost:3000/imu \
 A list of samples (up to 500) is accepted too. They land in `imu.jsonl` of the open glasses session.
 The ngrok address is public, so keep the token secret; with `INGEST_TOKEN` empty the door is closed.
 
-## See the photos and recordings
+## See it live, and the photos and recordings
 
 `viewer/` is a desktop app for that: `cd viewer`, `npm install`, `npm start`. See `viewer/README.md`.
+Its **Live** page shows what the glasses send as it arrives, and can start and stop the recorder.
+The recorder sends it a live feed on `http://127.0.0.1:3001` (`LIVE_PORT`; this computer only, never through ngrok).
+
+No glasses yet? `npm run demo` runs pretend glasses through the same recording code: photos and events
+every few seconds into `data/`, and into the viewer's Live page. No account, key or internet needed.
 
 ## What gets saved
 
@@ -107,6 +136,10 @@ they ask. Recordings can contain faces and screens: keep `data/` off shared driv
 ## Files
 
 - `src/server.mjs`: the app server and the `/imu` door
+- `src/recording.mjs`: records one session and passes its events to the live feed
+- `src/live.mjs`: the live feed for the viewer (127.0.0.1 only)
+- `src/demo.mjs`: pretend glasses (`npm run demo`)
+- `src/receiver.mjs`: takes photos and videos straight from the glasses over Wi-Fi (`npm run receive`)
 - `src/session.mjs`: photos, events and video for one glasses session
 - `src/store.mjs`: writes the files, checks IMU samples, keeps names safe
 - `src/config.mjs`: reads and checks `.env`

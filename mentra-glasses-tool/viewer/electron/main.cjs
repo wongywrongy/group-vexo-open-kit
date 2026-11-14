@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { scanLibrary, readEvents, resolveInside, contentType, parseRange } = require('./library.cjs');
+const { connectLive, livePort } = require('./live-client.cjs');
+const { createProcessManager } = require('./processes.cjs');
 
 // Photos and videos are served to the page as media://local/<path inside the data folder>.
 protocol.registerSchemesAsPrivileged([
@@ -10,7 +12,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
-const defaultDataDir = path.resolve(__dirname, '..', '..', 'data'); // mentra-glasses-tool/data
+const toolDir = path.resolve(__dirname, '..', '..'); // mentra-glasses-tool
+const defaultDataDir = path.join(toolDir, 'data');
 
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { return {}; }
@@ -44,6 +47,29 @@ async function serveMedia(request) {
   return new Response(Readable.toWeb(fs.createReadStream(file)), { status: 200, headers: { ...headers, 'Content-Length': String(size) } });
 }
 
+// ---- live link with the recorder ----
+const live = { online: false, status: null, events: [] };
+const sendAll = (payload) => {
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('live', payload);
+};
+function onLiveMessage(msg) {
+  if (msg.kind === 'status') live.status = msg;
+  if (msg.kind === 'event') {
+    live.events.push(msg);
+    if (live.events.length > 200) live.events.shift();
+  }
+  sendAll({ type: 'message', msg });
+}
+function onLiveState(online) {
+  live.online = online;
+  if (!online) live.status = null;
+  sendAll({ type: 'online', online });
+}
+let envText = '';
+try { envText = fs.readFileSync(path.join(toolDir, '.env'), 'utf8'); } catch { /* no .env yet */ }
+const port = livePort(envText);
+const processes = createProcessManager({ toolDir, onUpdate: sendAll });
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -74,6 +100,15 @@ app.whenReady().then(() => {
     if (!res.canceled && res.filePaths[0]) saveDataDir(res.filePaths[0]);
     return dataDir;
   });
+  ipcMain.handle('library:use', (_e, dir) => {
+    // Only used with the folder the recorder reports; it must be an existing folder.
+    if (typeof dir === 'string' && path.isAbsolute(dir) && fs.existsSync(dir) && fs.statSync(dir).isDirectory()) saveDataDir(dir);
+    return dataDir;
+  });
+  ipcMain.handle('live:snapshot', () => ({ ...live, port, processes: processes.snapshot() }));
+  ipcMain.handle('recorder:start', (_e, opts) => processes.start({ mode: opts?.mode, video: opts?.video === true }));
+  ipcMain.handle('recorder:stop', () => processes.stop());
+  connectLive({ port, onMessage: onLiveMessage, onState: onLiveState });
   ipcMain.handle('library:reveal', (_e, relPath) => {
     const file = resolveInside(dataDir, String(relPath ?? ''), { anyType: true }) ?? dataDir;
     shell.showItemInFolder(file);
@@ -82,4 +117,6 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+// Closing the app stops a recorder it started (a recorder started in a terminal keeps running).
+app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => processes.stop());
