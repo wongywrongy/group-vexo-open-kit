@@ -11,7 +11,7 @@ Nothing here is committed or pushed anywhere. Recordings go to `data/` (git-igno
 | Part | Status |
 |---|---|
 | Saving events, photos, IMU samples; settings checks; photo/video logic | Tested here with a pretend glasses session (`npm test`, 10 tests) |
-| Video receiver (`scripts/record-video.sh`) | Tested here with a fake RTMP push: it made `recording.mkv`, frame screenshots and `latest.jpg` |
+| Video receiver (`scripts/record-video.sh`) | Tested here with a fake RTMP push: it made `recording.mp4`, frame screenshots and `latest.jpg` |
 | `/imu` endpoint on the real MentraOS SDK server | Tested here: wrong token refused, good samples saved |
 | **Real glasses end to end** (app registration, the tunnel, photos, the stream) | **Not tested.** No glasses were available. The SDK calls were checked against the installed `@mentra/sdk` 2.1.29 type files, not run against a pair of glasses |
 
@@ -63,7 +63,7 @@ Photos and video share one camera, so with `VIDEO=1` photos switch off and scree
 The glasses push RTMP straight to this Mac, so **they must be on the same Wi-Fi as the Mac**
 (RTMP from glasses to a local address is documented as possible but was not tried here).
 The Mac's address is found automatically; set `RTMP_URL` if it picks the wrong one.
-You get `data/video/<time>/recording.mkv`, `frames/` (one screenshot per second) and `latest.jpg`
+You get `data/video/<time>/recording.mp4`, `frames/` (one screenshot per second) and `latest.jpg`
 (newest frame, twice a second): point your vision model at `latest.jpg`.
 Only one stream can run at a time. If the app says the camera is busy, stop other Mentra apps.
 
@@ -80,6 +80,10 @@ curl -X POST http://localhost:3000/imu \
 A list of samples (up to 500) is accepted too. They land in `imu.jsonl` of the open glasses session.
 The ngrok address is public, so keep the token secret; with `INGEST_TOKEN` empty the door is closed.
 
+## See the photos and recordings
+
+`viewer/` is a desktop app for that: `cd viewer`, `npm install`, `npm start`. See `viewer/README.md`.
+
 ## What gets saved
 
 ```
@@ -89,7 +93,7 @@ data/<time>_<user>/
   imu.jsonl      raw samples, only if something sent them
   photos/        photo_000001_<ms>.jpg ...
 data/video/<time>/
-  recording.mkv  frames/  latest.jpg
+  recording.mp4  frames/  latest.jpg
 ```
 
 Every record has `time` in milliseconds since 1970 (the Mac's clock when it arrived).
@@ -108,3 +112,4 @@ they ask. Recordings can contain faces and screens: keep `data/` off shared driv
 - `src/config.mjs`: reads and checks `.env`
 - `scripts/record-video.sh`: the video receiver
 - `test/`: `npm test`
+- `viewer/`: the desktop app to look at the recordings
