@@ -27,7 +27,7 @@ The band is a Bluetooth wrist unit (hardware: XIAO nRF52840 Sense) giving a 6-ax
 ### Cited Findings
 
 **Motion and IMU**
-- [DOC] `hw` = 1 is "XIAO nRF52840 Sense"; capabilities listed are `accel gyro events steps mic led battery temperature storage tx-power usb`. — [docs/api.md](../../../../docs/api.md) (`band.info` table); [contract/contract.md](../../../../contract/contract.md) (GET_INFO, caps bits)
+- [DOC] `hw` = 1 is "XIAO nRF52840 Sense"; capabilities listed are `accel gyro events steps mic led battery temperature storage tx-power usb`. — [docs/api.md](../../../docs/api.md) (`band.info` table); [contract/contract.md](../../../contract/contract.md) (GET_INFO, caps bits)
 - [DOC] Simple motion stream (`MOTION`): rates 10, 25 (default), 50, 100 Hz; fields `ax ay az` in milli-g (int16) and `gx gy gz` in tenths of a degree/second (int16). — contract.md section 4 and 5.2
 - [DOC] Fast stream (`MOTION2`, firmware 1.1, which every event band has): 10, 25, 50, 100, 208, 416, 833, 1666 Hz; `sensors` = accel, gyro or both. On firmware 1.1 the library's `configure(motion=...)` always uses this stream. — contract.md 5.2; api.md "Fast motion"
 - [DOC] Link limits. Bluetooth: 416 Hz both sensors, 833 Hz one sensor. USB: 833 Hz both or gyro alone, 1666 Hz accel alone. With `audio` on over Bluetooth, stay at 208 Hz (both) or 416 Hz (one sensor), or `stream-dropped` notices appear. Over the limit gives `denied`. — contract.md 5.2; api.md
@@ -37,13 +37,13 @@ The band is a Bluetooth wrist unit (hardware: XIAO nRF52840 Sense) giving a 6-ax
 - [DOC] `n` / `sample_no` counts samples from 0 at stream start and a jump equals samples lost. `t` is the band's own millisecond counter (with a fractional part in fast motion), never backwards within a connection. — api.md "Fast motion"
 - [DOC] At 208 Hz and up, `MOTION`, `EVENT`, `ACTIVITY` and the connect-window double-tap are fed from the fast samples averaged down to 208 Hz, so taps "can feel slightly more or less sensitive". Starting or changing such a stream leaves a gap of about 30 ms in `MOTION` and `EVENT`. — contract.md 5.2
 - [DOC] The gyro reads 0 for the first 100 ms after it switches on, and while `gyro_range_dps` is 0. 1666 Hz and gyro never run together. — contract.md 5.2
-- [DOC] Measured on one band on a desk: at rest the gyro reads 2.2-2.4 degrees/second and accel steps are at most 0.005 g. "A still hand and real gestures: not yet measured." — [projects/gesture-trainer/README.md](../../../../projects/gesture-trainer/README.md)
+- [DOC] Measured on one band on a desk: at rest the gyro reads 2.2-2.4 degrees/second and accel steps are at most 0.005 g. "A still hand and real gestures: not yet measured." — [projects/gesture-trainer/README.md](../../../projects/gesture-trainer/README.md)
 
 **Gesture events** (`configure(events=True)`, then `on("tap")` etc.)
 - [DOC] Seven kinds with exact definitions: single tap; double tap; free-fall (total acceleration below 0.35 g for 100 ms); tilt (gravity direction moved more than 35 degrees and held 2 s); orientation (one axis above 0.8 g for 300 ms; `arg`/`face` = +x -x +y -y +z -z up); motion started / stopped (movement above 0.1 g / below 0.05 g for 2 s). Only the tap threshold can be changed: `tap_threshold_mg` 200..8000, default 800. — contract.md section 5.2
 - [DOC] Each event carries `t_ms` (and `time` via the library). Event latency from the physical event to the frame is not documented.
 - [DOC] Steps: `activity` once a second (`steps` lifetime total, `cadence`, `state` still/walk/run, `motion` in mg); interval 0.1-3600 s on firmware 1.1. — api.md
-- [DOC] The kit's projects use these events (fall-alarm: free-fall + motion-start + double-tap; gesture-trainer: 50 Hz motion and its own template matcher). All six projects "run on the pretend band", not tried on a real band as whole projects; most thresholds are guesses. — [projects/README.md](../../../../projects/README.md)
+- [DOC] The kit's projects use these events (fall-alarm: free-fall + motion-start + double-tap; gesture-trainer: 50 Hz motion and its own template matcher). All six projects "run on the pretend band", not tried on a real band as whole projects; most thresholds are guesses. — [projects/README.md](../../../projects/README.md)
 
 **LED**
 - [DOC] One RGB LED. `LED_SET`: r,g,b 0-255, brightness 0-255, pattern solid / blink (half on, half off) / breathe / flash (60 ms every period) / rainbow / off, `period_ms` 100..10000. `identify()` blinks white 4x a second, 1-30 s. — contract.md 5.1; api.md
@@ -54,8 +54,8 @@ The band is a Bluetooth wrist unit (hardware: XIAO nRF52840 Sense) giving a 6-ax
 - [DOC] Audio: `configure(audio=True)` gives raw Opus packets, 16 kHz mono, 20 ms each, 50 a second, about 24 kbit/s (about 3,200 bytes/s). Packets have `seq` but **no timestamp**: frame time = start time + `seq` x 20 ms, and the sound of frame 0 starts about 140 ms after `STREAM_START` (about 40 ms if `MIC_LEVEL` already had the mic on). — contract.md section 4
 - [DOC] `mic_level`: `peak_db`, `rms_db` (dB below full scale, 0 loudest, 96 silence) over the last interval; interval 20 ms to 10 s in steps of 20 ms (default 100 ms). A real band at default gain (+20 dB) reads `rms_db` about 50 in a quiet room, 20-30 for speech near the band. Mic gain -20..+20 dB. — api.md "Loudness"
 - [DOC] **While `audio` or `mic_level` is on the LED is solid blue at full brightness and `set_led`, `led_off`, `identify` fail with `denied`.** Your LED setting comes back when both are off. It is a safety rule that cannot be changed. — contract.md section 6; AGENTS.md rule 4
-- [DOC] Speech to text goes through Deepgram (online, team key, `mip_opt_out=true`); the kit's helpers also reach OpenAI from Python. Keys live in environment variables or an untracked `.env` only. People nearby must be told the mic is on. — AGENTS.md "Audio to text to AI" and "Safety"; [docs/deepgram.md](../../../../docs/deepgram.md); [docs/speech.md](../../../../docs/speech.md)
-- [DOC] Clap detection from `mic_level`: `RISE_DB` 20 measured on one band on a desk (quiet room jumps at most 10 dB, loud claps 26-32 dB). — [projects/clap-lights/README.md](../../../../projects/clap-lights/README.md)
+- [DOC] Speech to text goes through Deepgram (online, team key, `mip_opt_out=true`); the kit's helpers also reach OpenAI from Python. Keys live in environment variables or an untracked `.env` only. People nearby must be told the mic is on. — AGENTS.md "Audio to text to AI" and "Safety"; [docs/deepgram.md](../../../docs/deepgram.md); [docs/speech.md](../../../docs/speech.md)
+- [DOC] Clap detection from `mic_level`: `RISE_DB` 20 measured on one band on a desk (quiet room jumps at most 10 dB, loud claps 26-32 dB). — [projects/clap-lights/README.md](../../../projects/clap-lights/README.md)
 
 **One Bluetooth connection, and USB**
 - [DOC] The band accepts one Bluetooth connection at a time and advertises only after a double-tap (60 s), after power-on or restart (60 s), or for 120 s after a link closes. While connected it cannot be found. — contract.md section 1; AGENTS.md rules 7-8
@@ -93,7 +93,7 @@ The band is a Bluetooth wrist unit (hardware: XIAO nRF52840 Sense) giving a 6-ax
 ### Gaps
 - Latency from physical event to notification on the host: not documented, not measured by the kit.
 - Whether the IMU's internal filtering/ODR gives usable data for sharp transients (such as a pinch) at 833 Hz: not documented. The datasheet of the actual part is not in the kit.
-- Whether the glue works with the real band end to end: the kit's own raw-BLE examples "have been run against a pretend Bluetooth layer, not against a real band" ([docs/bluetooth-contract.md](../../../../docs/bluetooth-contract.md)), and the six projects are not tested as whole projects on a real band.
+- Whether the glue works with the real band end to end: the kit's own raw-BLE examples "have been run against a pretend Bluetooth layer, not against a real band" ([docs/bluetooth-contract.md](../../../docs/bluetooth-contract.md)), and the six projects are not tested as whole projects on a real band.
 - Battery life while streaming fast motion plus audio: not in the kit.
 
 ---
